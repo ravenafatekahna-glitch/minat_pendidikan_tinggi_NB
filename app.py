@@ -8,6 +8,8 @@ import plotly.express as px
 import streamlit as st
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+from sklearn.naive_bayes import CategoricalNB
+from sklearn.preprocessing import OrdinalEncoder
 
 # =========================================================
 # KONFIGURASI HALAMAN
@@ -221,6 +223,7 @@ if BG_FILE.exists():
         unsafe_allow_html=True
     )
 
+
 # =========================================================
 # HALAMAN LOGIN
 # =========================================================
@@ -320,9 +323,18 @@ if not st.session_state.authenticated:
     )
     st.stop()
 
-DEFAULT_DATA_FILE = Path(__file__).with_name("Data_Siswa_Kelas_XII_Gabungan.xlsx")
-FEATURES = ["Jurusan", "Rombel", "Jenis Kelamin"]
-TARGET = "Label Aktual/Latih (editable)"
+DEFAULT_DATA_FILE = Path(__file__).with_name("Data hasil Kuensioner kelas XII gabungan.xlsx")
+FEATURES = [
+    "Dukungan Orangtua",
+    "Rata-rata Nilai Rapor",
+    "Nilai Bahasa Inggris",
+    "Nilai Bahasa Indonesia",
+    "Nilai Matematika",
+    "Pendapatan Orangtua"
+]
+
+TARGET = "Minat Melanjutkan Pendidikan"
+
 CLASS_MINAT = "Minat"
 CLASS_TIDAK = "Tidak minat"
 CLASSES = [CLASS_MINAT, CLASS_TIDAK]
@@ -353,65 +365,216 @@ def read_excel_file(file_bytes: bytes | None, default_path: str) -> pd.DataFrame
     df.columns = [str(col).strip().upper() for col in df.columns]
 
     rename_map = {
-        "NAMA SISWA": "Nama Siswa",
-        "JENIS KELAMIN": "Jenis Kelamin",
-        "NISN": "NISN",
-        "TAHUN AJARAN": "Tahun Ajaran",
-        "JURUSAN / ROMBEL": "Jurusan / Rombel",
-        "JURUSAN/ROMBEL": "Jurusan / Rombel",
-        "JURUSAN": "Jurusan",
-        "ROMBEL": "Rombel",
-        "LABEL AKTUAL/LATIH (EDITABLE)": TARGET,
+    "NAMA SISWA": "Nama Siswa",
+    "JENIS KELAMIN": "Jenis Kelamin",
+    "NISN": "NISN",
+    "TAHUN AJARAN": "Tahun Ajaran",
+    "JURUSAN / ROMBEL": "Jurusan / Rombel",
+    "JURUSAN/ROMBEL": "Jurusan / Rombel",
+    "JURUSAN": "Jurusan",
+    "ROMBEL": "Rombel",
+
+    # Variabel penelitian
+    "DUKUNGAN ORANGTUA": "Dukungan Orangtua",
+    "DUKUNGAN ORANG TUA": "Dukungan Orangtua",
+
+    "RATA-RATA NILAI RAPOR": "Rata-rata Nilai Rapor",
+
+    "NILAI RATA-RATA BAHASA INGGRIS":
+        "Nilai Bahasa Inggris",
+
+    "NILAI RATA-RATA BAHASA INDONESIA":
+        "Nilai Bahasa Indonesia",
+
+    "NILAI RATA-RATA BAHASA MATEMATIKA":
+        "Nilai Matematika",
+
+    "PENDAPATAN ORANGTUA": "Pendapatan Orangtua",
+    "PENDAPATAN ORANG TUA": "Pendapatan Orangtua",
+
+    "MINAT MELANJUTKAN PENDIDIKAN":
+        "Minat Melanjutkan Pendidikan",
     }
     df = df.rename(columns=rename_map)
 
+    # =========================================================
+    # MEMASTIKAN FORMAT DATA VARIABEL PENELITIAN
+    # =========================================================
+
+    kolom_nilai = [
+        "Rata-rata Nilai Rapor",
+        "Nilai Bahasa Inggris",
+        "Nilai Bahasa Indonesia",
+        "Nilai Matematika"
+    ]
+
+    for kolom in kolom_nilai:
+        if kolom in df.columns:
+            df[kolom] = pd.to_numeric(
+                df[kolom],
+                errors="coerce"
+            )
+
+    # =========================================================
+    # KATEGORI NILAI
+    # =========================================================
+
+    def kategori_nilai(nilai):
+        if pd.isna(nilai):
+            return np.nan
+
+        if nilai < 70:
+            return "Kurang"
+        elif nilai < 80:
+            return "Cukup"
+        elif nilai < 90:
+            return "Baik"
+        else:
+            return "Sangat Baik"
+
+    for kolom in kolom_nilai:
+        if kolom in df.columns:
+            df[kolom] = df[kolom].apply(kategori_nilai)
+
+    # =========================================================
+    # JURUSAN DAN ROMBEL
+    # =========================================================
+
     if "Jurusan / Rombel" in df.columns:
         gabungan = df["Jurusan / Rombel"].astype(str).str.strip()
+
         jurusan = np.select(
             [
-                gabungan.str.contains(r"\bMP\b|MANAJEMEN PERKANTORAN", case=False, regex=True),
-                gabungan.str.contains(r"\bTSM\b|TEKNIK SEPEDA MOTOR", case=False, regex=True),
+                gabungan.str.contains(
+                    r"\bMP\b|MANAJEMEN PERKANTORAN",
+                    case=False,
+                    regex=True
+                ),
+                gabungan.str.contains(
+                    r"\bTSM\b|TEKNIK SEPEDA MOTOR",
+                    case=False,
+                    regex=True
+                ),
             ],
-            ["Manajemen Perkantoran", "Teknik Sepeda Motor"],
+            [
+                "Manajemen Perkantoran",
+                "Teknik Sepeda Motor"
+            ],
             default=gabungan,
         )
+
         rombel = np.where(
-            gabungan.str.match(r"^XII\s+(MP|TSM)\s+\d+$", case=False),
+            gabungan.str.match(
+                r"^XII\s+(MP|TSM)\s+\d+$",
+                case=False
+            ),
             gabungan.str.upper(),
             "Belum tercantum",
         )
+
         df["Jurusan"] = jurusan
         df["Rombel"] = rombel
 
-    required_identity = ["Nama Siswa", "Jenis Kelamin", "Jurusan", "Rombel"]
-    missing = [col for col in required_identity if col not in df.columns]
+    # =========================================================
+    # CEK IDENTITAS
+    # =========================================================
+
+    required_identity = [
+        "Nama Siswa",
+        "Jenis Kelamin",
+        "Jurusan",
+        "Rombel"
+    ]
+
+    missing = [
+        col for col in required_identity
+        if col not in df.columns
+    ]
+
     if missing:
-        raise ValueError(f"Kolom wajib tidak ditemukan: {', '.join(missing)}")
-
-    # Hapus baris kosong dan normalisasi data teks.
-    df = df.dropna(subset=["Nama Siswa", "Jenis Kelamin", "Jurusan"]).copy()
-    for col in ["Nama Siswa", "Jenis Kelamin", "Jurusan", "Rombel"]:
-        df[col] = df[col].astype(str).str.strip()
-
-    # File gabungan tidak memuat hasil kuesioner minat. Label berikut hanya untuk demonstrasi
-    # perhitungan aplikasi dan menghasilkan evaluasi mendekati 98%; wajib diganti dengan label asli.
-    if TARGET not in df.columns:
-        base_label = np.where(df["Jurusan"].eq("Manajemen Perkantoran"), CLASS_MINAT, CLASS_TIDAK)
-        flip_mask = np.arange(len(df)) % 50 == 0
-        df[TARGET] = np.where(
-            flip_mask,
-            np.where(base_label == CLASS_MINAT, CLASS_TIDAK, CLASS_MINAT),
-            base_label,
+        raise ValueError(
+            f"Kolom wajib tidak ditemukan: {', '.join(missing)}"
         )
 
-    df[TARGET] = df[TARGET].astype(str).str.strip()
-    df = df[df[TARGET].isin(CLASSES)].copy()
+    # Hapus baris kosong
+    df = df.dropna(
+        subset=[
+            "Nama Siswa",
+            "Jenis Kelamin",
+            "Jurusan"
+        ]
+    ).copy()
+
+    # Normalisasi teks
+    for col in [
+        "Nama Siswa",
+        "Jenis Kelamin",
+        "Jurusan",
+        "Rombel"
+    ]:
+        df[col] = df[col].astype(str).str.strip()
+
+    # =========================================================
+    # TARGET / LABEL AKTUAL
+    # =========================================================
+
+    if TARGET not in df.columns:
+        raise ValueError(
+            "Kolom 'Minat Melanjutkan Pendidikan' "
+            "tidak ditemukan pada data."
+        )
+
+    df[TARGET] = (
+        df[TARGET]
+        .astype(str)
+        .str.strip()
+    )
+
+    # Normalisasi label
+    df[TARGET] = df[TARGET].replace({
+        "MINAT": "Minat",
+        "Minat": "Minat",
+        "minat": "Minat",
+
+        "TIDAK MINAT": "Tidak minat",
+        "Tidak Minat": "Tidak minat",
+        "Tidak minat": "Tidak minat",
+        "tidak minat": "Tidak minat"
+    })
+
+    # Hanya dua kelas penelitian
+    df = df[
+        df[TARGET].isin(CLASSES)
+    ].copy()
+
     df = df.reset_index(drop=True)
 
-    # Urutkan kolom identitas agar data gabungan mudah dibaca pada menu Data Siswa.
-    preferred = ["NO", "Nama Siswa", "Jenis Kelamin", "NISN", "Jurusan", "Rombel", "Tahun Ajaran", TARGET]
-    available = [col for col in preferred if col in df.columns]
-    other = [col for col in df.columns if col not in available and col != "Jurusan / Rombel"]
+    # =========================================================
+    # URUTKAN KOLOM
+    # =========================================================
+
+    preferred = [
+        "NO",
+        "Nama Siswa",
+        "Jenis Kelamin",
+        "NISN",
+        "Jurusan",
+        "Rombel",
+        "Tahun Ajaran",
+        TARGET
+    ]
+
+    available = [
+        col for col in preferred
+        if col in df.columns
+    ]
+
+    other = [
+        col for col in df.columns
+        if col not in available
+        and col != "Jurusan / Rombel"
+    ]
+
     return df[available + other]
 
 
@@ -430,18 +593,30 @@ def train_naive_bayes(df: pd.DataFrame, features: list[str], target: str) -> dic
     }
 
     likelihood_tables: dict[str, pd.DataFrame] = {}
+
     for feature in features:
         rows = []
         k = len(categories[feature])
+
         for kategori in categories[feature]:
             item = {"Kategori": kategori}
+
             for kelas in CLASSES:
-                count_x_c = int(((df[feature] == kategori) & (df[target] == kelas)).sum())
+                count_x_c = int(
+                    (
+                        (df[feature].fillna("Tidak Ada").astype(str).str.strip() == kategori)
+                        & (df[target].fillna("").astype(str).str.strip() == kelas)
+                        ).sum()
+                    )
                 denominator = class_count[kelas] + k
+
                 prob = (count_x_c + 1) / denominator if denominator else 0
+
                 item[f"Count {kelas}"] = count_x_c
                 item[f"P(X|{kelas})"] = prob
+
             rows.append(item)
+
         likelihood_tables[feature] = pd.DataFrame(rows)
 
     return {
@@ -465,6 +640,7 @@ def predict_single(input_data: dict, model: dict) -> dict:
             "Kelas": kelas,
             "Prior": score,
         }
+
         for feature in model["features"]:
             value = str(input_data[feature])
             table = model["likelihood_tables"][feature]
@@ -474,8 +650,10 @@ def predict_single(input_data: dict, model: dict) -> dict:
                 prob = float(table.loc[table["Kategori"] == value, col_prob].iloc[0])
             else:
                 # Jika kategori baru tidak ada di data latih, pakai Laplace smoothing minimum.
-                k = len(model["categories"][feature]) + 1
-                prob = 1 / (model["class_count"][kelas] + k)
+                k = len(model["categories"][feature])
+                denominator = model["class_count"][kelas] + k
+                
+                prob = 1 / denominator if denominator else 0
 
             score *= prob
             row_detail[f"P({feature}|{kelas})"] = prob
@@ -801,85 +979,333 @@ if menu == "Dashboard & Grafik":
 # MENU PREDIKSI MANUAL
 # =========================================================
 elif menu == "Prediksi Manual":
-    st.subheader("Form Prediksi Siswa")
+
+    st.subheader("🔍 Prediksi Manual Siswa")
+
     st.write(
-        "Masukkan identitas dan atribut siswa. Sistem akan menghitung probabilitas Naive Bayes "
-        "berdasarkan jurusan, rombel, dan jenis kelamin."
+        "Pilih nama siswa. Data identitas dan variabel penelitian "
+        "akan otomatis terisi sesuai data siswa pada Excel."
     )
 
-    with st.form("form_prediksi_siswa"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            input_nama = st.selectbox(
-                "Nama Siswa", 
-                sorted(df["Nama Siswa"].unique()), 
-                index=None,
-                placeholder="Pilih nama siswa"
+    # ---------------------------------------------------------
+    # PILIH NAMA SISWA
+    # ---------------------------------------------------------
+    st.markdown("### 👤 Identitas Siswa")
+
+    daftar_nama = sorted(
+        df["Nama Siswa"].dropna().astype(str).unique().tolist()
+    )
+
+    input_nama = st.selectbox(
+        "👤 Nama Siswa",
+        options=["-- Pilih Nama Siswa --"] + daftar_nama,
+        key="prediksi_nama"
+    )
+
+    # ---------------------------------------------------------
+    # DATA OTOMATIS BERDASARKAN NAMA
+    # ---------------------------------------------------------
+    data_siswa = None
+
+    if input_nama != "-- Pilih Nama Siswa --":
+
+        data_siswa = df[
+            df["Nama Siswa"].astype(str).str.strip() == input_nama.strip()
+        ].iloc[0]
+
+        st.success(
+            f"✅ Data siswa **{input_nama}** ditemukan. "
+            "Data di bawah otomatis mengikuti data Excel."
+        )
+
+   
+    # ---------------------------------------------------------
+    # IDENTITAS DAN VARIABEL
+    # ---------------------------------------------------------
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        if data_siswa is not None:
+
+            st.text_input(
+                "Jurusan",
+                value=str(data_siswa["Jurusan"]),
+                disabled=True
             )
-            input_jurusan = st.selectbox("Jurusan", model["categories"]["Jurusan"])
-        with col_b:
-            input_rombel = st.selectbox("Rombel", model["categories"]["Rombel"])
-            input_jk = st.selectbox("Jenis Kelamin", model["categories"]["Jenis Kelamin"])
 
-        proses_prediksi = st.form_submit_button("🔍 Proses Prediksi", use_container_width=True)
+            st.text_input(
+                "Rombel",
+                value=str(data_siswa["Rombel"]),
+                disabled=True
+            )
 
-    if proses_prediksi:
-        if not input_nama:
-            st.warning("Nama siswa wajib diisi sebelum proses prediksi dilakukan.")
+            st.text_input(
+                "Jenis Kelamin",
+                value=str(data_siswa["Jenis Kelamin"]),
+                disabled=True
+            )
+
+            st.text_input(
+                "Dukungan Orangtua",
+                value=str(data_siswa["Dukungan Orangtua"]),
+                disabled=True
+            )
+
         else:
-            input_data = {
-                "Jurusan": input_jurusan,
-                "Rombel": input_rombel,
-                "Jenis Kelamin": input_jk,
+
+            st.text_input(
+                "Jurusan",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Rombel",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Jenis Kelamin",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Dukungan Orangtua",
+                value="-",
+                disabled=True
+            )
+
+    col3, col4 = st.columns(2)
+    
+    with col2:
+
+        st.markdown("### 📊 Variabel Penelitian")
+
+        if data_siswa is not None:
+
+            st.text_input(
+                "Rata-rata Nilai Rapor",
+                value=str(data_siswa["Rata-rata Nilai Rapor"]),
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Bahasa Inggris",
+                value=str(data_siswa["Nilai Bahasa Inggris"]),
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Bahasa Indonesia",
+                value=str(data_siswa["Nilai Bahasa Indonesia"]),
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Matematika",
+                value=str(data_siswa["Nilai Matematika"]),
+                disabled=True
+            )
+
+            st.text_input(
+                "Pendapatan Orangtua",
+                value=str(data_siswa["Pendapatan Orangtua"]),
+                disabled=True
+            )
+
+        else:
+
+            st.text_input(
+                "Rata-rata Nilai Rapor",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Bahasa Inggris",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Bahasa Indonesia",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Nilai Matematika",
+                value="-",
+                disabled=True
+            )
+
+            st.text_input(
+                "Pendapatan Orangtua",
+                value="-",
+                disabled=True
+            )
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # TOMBOL PREDIKSI
+    # ---------------------------------------------------------
+    proses_prediksi = st.button(
+        "🔍 Proses Prediksi",
+        use_container_width=True,
+        disabled=(data_siswa is None)
+    )
+
+    if proses_prediksi and data_siswa is not None:
+
+        # -----------------------------------------------------
+        # DATA YANG DIKIRIM KE NAIVE BAYES
+        # -----------------------------------------------------
+        input_data = {
+            "Dukungan Orangtua": data_siswa["Dukungan Orangtua"],
+            "Rata-rata Nilai Rapor": data_siswa["Rata-rata Nilai Rapor"],
+            "Nilai Bahasa Inggris": data_siswa["Nilai Bahasa Inggris"],
+            "Nilai Bahasa Indonesia": data_siswa["Nilai Bahasa Indonesia"],
+            "Nilai Matematika": data_siswa["Nilai Matematika"],
+            "Pendapatan Orangtua": data_siswa["Pendapatan Orangtua"],
+        }
+
+        # -----------------------------------------------------
+        # PREDIKSI
+        # -----------------------------------------------------
+        pred = predict_single(
+            input_data,
+            model
+        )
+
+        st.markdown("---")
+        st.subheader("📊 Hasil Prediksi")
+
+        # -----------------------------------------------------
+        # IDENTITAS
+        # -----------------------------------------------------
+        identitas = pd.DataFrame(
+            {
+                "Atribut": [
+                    "Nama Siswa",
+                    "Jurusan",
+                    "Rombel",
+                    "Jenis Kelamin"
+                ],
+                "Nilai": [
+                    input_nama,
+                    data_siswa["Jurusan"],
+                    data_siswa["Rombel"],
+                    data_siswa["Jenis Kelamin"]
+                ]
             }
-            pred = predict_single(input_data, model)
+        )
 
-            st.markdown("### Hasil Prediksi Siswa")
-            identitas = pd.DataFrame(
+        st.dataframe(
+            identitas,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # -----------------------------------------------------
+        # HASIL KEPUTUSAN
+        # -----------------------------------------------------
+        prob_minat = pred["probability"][CLASS_MINAT]
+        prob_tidak = pred["probability"][CLASS_TIDAK]
+
+        if pred["keputusan"] == CLASS_MINAT:
+
+            st.markdown(
+                f"""
+                <div class="success-box">
+                    🎓 {input_nama}<br>
+                    MINAT melanjutkan ke perguruan tinggi
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        else:
+
+            st.markdown(
+                f"""
+                <div class="danger-box">
+                    🎓 {input_nama}<br>
+                    TIDAK MINAT melanjutkan ke perguruan tinggi
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        # -----------------------------------------------------
+        # PROBABILITAS
+        # -----------------------------------------------------
+        st.markdown("### 📈 Probabilitas Prediksi")
+
+        prob_df = pd.DataFrame(
+            {
+                "Kelas": [
+                    CLASS_MINAT,
+                    CLASS_TIDAK
+                ],
+                "Probabilitas": [
+                    prob_minat,
+                    prob_tidak
+                ]
+            }
+        )
+
+        st.dataframe(
+            prob_df.style.format(
                 {
-                    "Atribut": ["Nama Siswa", "Jurusan", "Rombel", "Jenis Kelamin"],
-                    "Nilai": [input_nama.strip(), input_jurusan, input_rombel, input_jk],
+                    "Probabilitas": "{:.2%}"
                 }
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        fig_prob = px.bar(
+            prob_df,
+            x="Kelas",
+            y="Probabilitas",
+            text=prob_df["Probabilitas"].map(
+                lambda x: f"{x:.2%}"
+            ),
+            title=f"Probabilitas Minat — {input_nama}"
+        )
+
+        fig_prob.update_layout(
+            yaxis_tickformat=".0%",
+            yaxis_title="Probabilitas",
+            xaxis_title="Keputusan"
+        )
+
+        st.plotly_chart(
+            fig_prob,
+            use_container_width=True
+        )
+
+        # -----------------------------------------------------
+        # DETAIL PERHITUNGAN
+        # -----------------------------------------------------
+        with st.expander("📐 Lihat Detail Perhitungan Naive Bayes"):
+
+            st.dataframe(
+                pred["detail"].style.format(
+                    precision=8
+                ),
+                use_container_width=True
             )
-            st.dataframe(identitas, use_container_width=True, hide_index=True)
 
-            if pred["keputusan"] == CLASS_MINAT:
-                st.markdown(
-                    f'<div class="success-box">{input_nama.strip()}: MINAT melanjutkan ke perguruan tinggi</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div class="danger-box">{input_nama.strip()}: TIDAK MINAT melanjutkan ke perguruan tinggi</div>',
-                    unsafe_allow_html=True,
-                )
+        st.info(
+            "Keputusan ditentukan berdasarkan probabilitas terbesar "
+            "antara Minat dan Tidak minat."
+        )
 
-            prob_df = pd.DataFrame(
-                {
-                    "Kelas": CLASSES,
-                    "Probabilitas": [
-                        pred["probability"][CLASS_MINAT],
-                        pred["probability"][CLASS_TIDAK],
-                    ],
-                }
-            )
-            fig_prob = px.bar(
-                prob_df,
-                x="Kelas",
-                y="Probabilitas",
-                text=prob_df["Probabilitas"].map(lambda x: f"{x:.2%}"),
-                title=f"Perbandingan Probabilitas — {input_nama.strip()}",
-            )
-            fig_prob.update_layout(yaxis_tickformat=".0%", yaxis_title="Probabilitas")
-            st.plotly_chart(fig_prob, use_container_width=True)
-
-            with st.expander("Lihat detail perhitungan Naive Bayes"):
-                st.dataframe(
-                    pred["detail"].style.format(precision=8),
-                    use_container_width=True,
-                )
-
-            st.info("Keputusan diambil dari kelas yang memiliki probabilitas paling besar.")
 
 # =========================================================
 # MENU DATA SISWA
@@ -915,45 +1341,166 @@ elif menu == "Data Siswa":
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
+
 # =========================================================
 # MENU PROBABILITAS
 # =========================================================
 elif menu == "Probabilitas":
-    st.subheader("Tabel Probabilitas Naive Bayes")
+
+    st.subheader("📊 Tabel Probabilitas Naive Bayes")
+
+    # =====================================================
+    # PRIOR KELAS
+    # =====================================================
 
     prior_df = pd.DataFrame(
         {
             "Keterangan": CLASSES,
-            "Jumlah Data": [model["class_count"][kelas] for kelas in CLASSES],
-            "Prior P(C)": [model["priors"][kelas] for kelas in CLASSES],
+
+            "Jumlah Data": [
+                model["class_count"][kelas]
+                for kelas in CLASSES
+            ],
+
+            "Prior P(C)": [
+                model["priors"][kelas]
+                for kelas in CLASSES
+            ],
         }
     )
-    st.markdown("### Prior Kelas")
-    st.dataframe(prior_df.style.format({"Prior P(C)": "{:.4f}"}), use_container_width=True)
 
-    tab_jurusan, tab_rombel, tab_jk = st.tabs(["Jurusan", "Rombel", "Jenis Kelamin"])
-    with tab_jurusan:
-        st.dataframe(model["likelihood_tables"]["Jurusan"].style.format(precision=6), use_container_width=True)
-    with tab_rombel:
-        st.dataframe(model["likelihood_tables"]["Rombel"].style.format(precision=6), use_container_width=True)
-    with tab_jk:
-        st.dataframe(model["likelihood_tables"]["Jenis Kelamin"].style.format(precision=6), use_container_width=True)
+    st.markdown("### Prior Kelas")
+
+    st.dataframe(
+        prior_df.style.format(
+            {
+                "Prior P(C)": "{:.6f}"
+            }
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # =====================================================
+    # TABEL PROBABILITAS FITUR PENELITIAN
+    # =====================================================
+
+    st.markdown(
+        "### Probabilitas Setiap Variabel Penelitian"
+    )
+
+    # =====================================================
+    # TAB 1-3
+    # =====================================================
+
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "Dukungan Orangtua",
+            "Nilai Rapor",
+            "Bahasa Inggris"
+        ]
+    )
+
+    with tab1:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Dukungan Orangtua"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    with tab2:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Rata-rata Nilai Rapor"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    with tab3:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Nilai Bahasa Inggris"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    # =====================================================
+    # TAB 4-6
+    # =====================================================
+
+    tab4, tab5, tab6 = st.tabs(
+        [
+            "Bahasa Indonesia",
+            "Matematika",
+            "Pendapatan Orangtua"
+        ]
+    )
+
+    with tab4:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Nilai Bahasa Indonesia"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    with tab5:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Nilai Matematika"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    with tab6:
+
+        st.dataframe(
+            model["likelihood_tables"][
+                "Pendapatan Orangtua"
+            ].style.format(precision=6),
+
+            use_container_width=True
+        )
+
+    # =====================================================
+    # RUMUS LAPALCE
+    # =====================================================
 
     st.markdown(
         """
         <div class="note-box">
-        Rumus probabilitas fitur menggunakan Laplace Smoothing:<br>
-        <b>P(X|C) = (jumlah X pada kelas C + 1) / (jumlah kelas C + jumlah kategori fitur)</b>
+
+        <b>Rumus probabilitas fitur menggunakan Laplace Smoothing:</b>
+
+        <br><br>
+
+        P(X|C) =
+        (jumlah X pada kelas C + 1)
+        /
+        (jumlah data kelas C + jumlah kategori fitur)
+
         </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
+
 
 # =========================================================
 # MENU RUMUS
 # =========================================================
 elif menu == "Rumus":
-    st.subheader("Rumus Manual Metode Naive Bayes")
+    st.subheader("📐 Rumus Manual Metode Naive Bayes")
 
     st.markdown(
         r"""
